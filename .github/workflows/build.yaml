@@ -1,4 +1,4 @@
-name: Build Miatoll Kernel (Clang)
+name: Build Miatoll Kernel (Exact 4.14.117)
 
 on:
   workflow_dispatch:
@@ -6,52 +6,53 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # TRICK: Run inside a 20.04 container to get the correct compiler instantly
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
-        with:
-          repository: xiaomi-sm6250-devs/android_kernel_xiaomi_sm6250 
-          ref: 11.0 
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libncurses-dev build-essential zip git wget curl gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          apt-get update
+          apt-get install -y bc bison flex libssl-dev libncurses-dev build-essential gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu zip git wget curl python3 sudo
 
-      - name: Download Proton-Clang
+      - name: Nuke Xiaomi Strict Compiler Wrapper
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          cat << 'EOF' > scripts/gcc-wrapper.py
+          import sys
+          import os
 
-      - name: Build Kernel
+          if __name__ == '__main__':
+              if len(sys.argv) > 1:
+                  os.execvp(sys.argv[1], sys.argv[1:])
+          EOF
+          chmod +x scripts/gcc-wrapper.py
+
+      - name: Build kernel
         run: |
-          # Inject Clang into the system path
-          export PATH="$(pwd)/clang/bin:$PATH"
-          
           export ARCH=arm64
           export SUBARCH=arm64
           export KBUILD_BUILD_USER=builder
           export KBUILD_BUILD_HOST=github-actions
           
-          # Set explicit LLVM/Clang compiler arguments
-          export MAKE_ARGS="O=out ARCH=arm64 \
-            CC=clang \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip"
-            
-          # 1. Generate config 
-          make $MAKE_ARGS vendor/atoll-perf_defconfig
+          # 1. Generate configuration
+          make O=out ARCH=arm64 vendor/atoll-perf_defconfig
           
           # 2. Disable module signature enforcement
           sed -i 's/CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/g' out/.config
           sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' out/.config
           
-          # 3. Compile at full speed
-          make -j$(nproc --all) $MAKE_ARGS
+          # 3. Disable built-in config warning flags
+          sed -i 's/CONFIG_ERROR_ON_WARNING=y/# CONFIG_ERROR_ON_WARNING is not set/g' out/.config
+          
+          # 4. Compile natively using the container's GCC 9 environment
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: Package with AnyKernel3
         run: |
@@ -64,4 +65,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flashable-kernel
-          path: AK3/kernel-flashable.zip
+          path: kernel-flashable.zip
